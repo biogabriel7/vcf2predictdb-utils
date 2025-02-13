@@ -1,0 +1,9 @@
+input_dir: "/fs/ess/PAS2598/h5/Genomic_Data/vcf_snps_only/vcf"
+output_dir: "/fs/ess/PAS2598/h5/Genomic_Data/vcf_snps_only/vcf_processed"
+samples_file: "/users/PAS2598/duarte63/GitHub/vcf2predictdb-utils/samples_to_extract.txt"
+min_maf: 0.01
+min_dp: 7
+threads: 24
+memory_gb: 128
+compress_level: 9
+temp_dir: "/fs/ess/PAS2598/h5/Genomic_Data/vcf_snps_only/temp"  # Changed to shared directory

@@ -1,0 +1,134 @@
+# Configuration
+configfile: "config.yaml"
+
+import os
+from pathlib import Path
+import pandas as pd
+import subprocess
+from datetime import datetime
+
+# Get list of input VCF files
+VCF_DIR = config["input_dir"]
+print(f"Looking for VCF files in: {VCF_DIR}")
+
+# Create all required directories
+os.makedirs(config["output_dir"], exist_ok=True)
+os.makedirs("logs", exist_ok=True)
+os.makedirs("qc_reports", exist_ok=True)
+os.makedirs(config["temp_dir"], exist_ok=True)  # Create temp directory
+
+vcf_files = [f for f in os.listdir(VCF_DIR)
+             if f.startswith('ALL.chr') and
+             f.endswith('.phased.vcf.gz') and
+             not f.endswith('.tbi')]
+print(f"Found {len(vcf_files)} VCF files")
+
+# Extract chromosome numbers for wildcards
+CHROMS = [f.split('.')[1][3:] for f in vcf_files]
+print(f"Processing chromosomes: {CHROMS}")
+
+# Input validation function
+def validate_inputs(wildcards):
+    """Validate input files exist and are accessible."""
+    chrom = wildcards.chrom
+    print(f"Validating inputs for chromosome {chrom}")
+    
+    vcf = os.path.join(config["input_dir"], 
+                      f"ALL.chr{chrom}.shapeit2_integrated_SNPs_v2a_27022019.GRCh38.phased.vcf.gz")
+    
+    if not os.path.exists(vcf):
+        raise FileNotFoundError(f"VCF file not found: {vcf}")
+    
+    if not os.path.exists(vcf + '.tbi'):
+        raise FileNotFoundError(f"VCF index not found: {vcf}.tbi")
+    
+    samples_file = config["samples_file"]
+    if not os.path.exists(samples_file):
+        raise FileNotFoundError(f"Samples file not found: {samples_file}")
+    
+    return vcf
+
+# Rule to define the final expected output
+rule all:
+    input:
+        vcfs = expand(os.path.join(config["output_dir"], "chr{chrom}.subset.vcf.gz"), chrom=CHROMS),
+        indexes = expand(os.path.join(config["output_dir"], "chr{chrom}.subset.vcf.gz.tbi"), chrom=CHROMS),
+        qc_reports = expand("qc_reports/chr{chrom}.qc_report.txt", chrom=CHROMS),
+        summary = "summary_report.txt"
+
+# Rule to subset VCF files by samples with QC
+rule subset_vcf:
+    input:
+        vcf = validate_inputs,
+        samples = config["samples_file"]
+    output:
+        vcf = os.path.join(config["output_dir"], "chr{chrom}.subset.vcf.gz"),
+        index = os.path.join(config["output_dir"], "chr{chrom}.subset.vcf.gz.tbi"),
+        qc_report = "qc_reports/chr{chrom}.qc_report.txt"
+    log:
+        "logs/subset_vcf.chr{chrom}.log"
+    threads: config["threads"]
+    resources:
+        mem_gb = config["memory_gb"]
+    shell:
+        """
+        # Create QC report header
+        echo "QC Report for chromosome {wildcards.chrom}" > {output.qc_report}
+        echo "Generated on: $(date)" >> {output.qc_report}
+        echo "Input VCF: {input.vcf}" >> {output.qc_report}
+        echo "" >> {output.qc_report}
+
+        # Extract variants with QC filters
+        bcftools view {input.vcf} \
+            --samples-file {input.samples} \
+            --include "AF>={config[min_maf]} && AF<=(1-{config[min_maf]}) && INFO/DP>={config[min_dp]}" \
+            --threads {threads} \
+            -Oz -o {output.vcf} \
+            2> {log}
+
+        # Index the output VCF
+        tabix -p vcf {output.vcf}
+
+        # Generate QC statistics
+        echo "Post-filtering statistics:" >> {output.qc_report}
+        bcftools stats {output.vcf} >> {output.qc_report}
+
+        # Extract and report maintained INFO fields
+        echo "" >> {output.qc_report}
+        echo "Maintained INFO fields:" >> {output.qc_report}
+        bcftools view -h {output.vcf} | grep "^##INFO" >> {output.qc_report}
+        """
+
+# Rule to create a summary report
+rule create_summary:
+    input:
+        vcfs = expand(os.path.join(config["output_dir"], "chr{chrom}.subset.vcf.gz"), chrom=CHROMS),
+        qc_reports = expand("qc_reports/chr{chrom}.qc_report.txt", chrom=CHROMS)
+    output:
+        "summary_report.txt"
+    threads: 4
+    run:
+        with open(output[0], 'w') as f:
+            f.write("Summary Report\n")
+            f.write(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+            
+            total_variants = 0
+            total_samples = 0
+            
+            for vcf in input.vcfs:
+                try:
+                    variant_count = int(subprocess.check_output(f'bcftools index -n {vcf}', shell=True))
+                    total_variants += variant_count
+                    
+                    if total_samples == 0:
+                        sample_count = len(subprocess.check_output(f'bcftools query -l {vcf}', shell=True).decode().strip().split('\n'))
+                        total_samples = sample_count
+                except subprocess.CalledProcessError as e:
+                    print(f"Error processing VCF {vcf}: {str(e)}")
+                    raise
+            
+            f.write(f"Total variants: {total_variants}\n")
+            f.write(f"Total samples: {total_samples}\n")
+            f.write(f"QC filters applied:\n")
+            f.write(f"  Minimum MAF: {config['min_maf']}\n")
+            f.write(f"  Minimum depth: {config['min_dp']}\n")

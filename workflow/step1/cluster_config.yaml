@@ -1,0 +1,17 @@
+__default__:
+    time: "4:00:00"
+    mem: "32GB"  # Default memory reduced
+    cpus: 24     # Default cores reduced
+    account: "PAS2598"
+    output: "logs/slurm_{rule}_{wildcards}.out"
+    error: "logs/slurm_{rule}_{wildcards}.err"
+
+subset_vcf:
+    time: "12:00:00"
+    mem: "128GB"  # Enough for VCF processing
+    cpus: 24      # Better efficiency for bcftools
+
+create_summary:
+    time: "2:00:00"
+    mem: "16GB"   # Summary doesn't need much memory
+    cpus: 4       # Summary is not heavily parallel
